@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "tfgs-api-gatherer"
+version = "0.1.0"
+description = ""
+authors = ["cobaltcore <cobaltcore@yandex.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+fastapi-contrib = "^0.2.9"
+pymongo = "^3.11.2"
+pony = "^0.7.14"
+pytz = "^2020.4"
+motor = "^2.3.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
