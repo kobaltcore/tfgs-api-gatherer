@@ -2,6 +2,7 @@
 import os
 import textwrap
 import datetime as dt
+from urllib.parse import urlparse
 from collections import defaultdict
 
 ### FastAPI ###
@@ -29,19 +30,11 @@ from pony.orm import (
 
 class Settings(BaseSettings):
     DB_TYPE: str = "postgres"
-    DB_USERNAME: str = Field(..., env="db.USERNAME")
-    DB_PASSWORD: str = Field(..., env="db.PASSWORD")
-    DB_HOSTNAME: str = Field(..., env="db.HOSTNAME")
-    DB_PORT: int = Field(..., env="db.PORT")
-    DB_DATABASE: str = Field(..., env="db.DATABASE")
+    DATABASE_URL: str = None
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
-
-
-for k, v in os.environ.items():
-    print(k, v)
 
 
 config = Settings()
@@ -177,14 +170,16 @@ class Review(db.Entity):
 print(config)
 
 if config.DB_TYPE == "sqlite":
-    db.bind(provider="sqlite", filename=os.path.abspath(config.DB_HOSTNAME))
+    db.bind(provider="sqlite", filename=os.path.abspath(config.DB_FILE))
 else:
+    parsed = urlparse(config.DATABASE_URL)
     db.bind(
         provider="postgres",
-        user=config.DB_USERNAME,
-        password=config.DB_PASSWORD,
-        host=config.DB_HOSTNAME,
-        database=config.DB_DATABASE,
+        user=parsed.username,
+        password=parsed.password,
+        host=parsed.hostname,
+        port=parsed.port,
+        database=parsed.path.lstrip("/"),
     )
 
 db.generate_mapping(create_tables=False)
