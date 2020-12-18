@@ -182,7 +182,7 @@ else:
         database=parsed.path.lstrip("/"),
     )
 
-db.generate_mapping(create_tables=False)
+db.generate_mapping(create_tables=True)
 
 
 ### Models ###
