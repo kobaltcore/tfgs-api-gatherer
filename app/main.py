@@ -5,10 +5,7 @@ import datetime as dt
 from collections import defaultdict
 
 ### FastAPI ###
-import graphene
 from typing import *
-
-from starlette.graphql import GraphQLApp
 from fastapi_contrib.pagination import Pagination
 from fastapi import FastAPI, Depends  # , HTTPException
 from pydantic import BaseModel, BaseSettings, Field
@@ -71,17 +68,6 @@ app = FastAPI(
     ],
     redoc_url=None,
 )
-
-
-class Query(graphene.ObjectType):
-    hello = graphene.String(name=graphene.String(default_value="stranger"))
-    title = graphene.String(name=graphene.String())
-
-    def resolve_hello(self, info, name):
-        return "Hello " + name
-
-
-app.add_route("/", GraphQLApp(schema=graphene.Schema(query=Query)))
 
 
 ### Database ###
