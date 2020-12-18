@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
 
 
+for k, v in os.environ.items():
+    print(k, v)
+
+
 config = Settings()
 
 
