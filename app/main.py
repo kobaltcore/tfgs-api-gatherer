@@ -386,7 +386,7 @@ def show_games(pagination: Pagination = Depends()):
     List all games in the TFGS database.
     """
     with db_session:
-        games = Game.select()[pagination.offset: pagination.limit]
+        games = Game.select()[pagination.offset : pagination.limit]
         return [db_game_to_pgame(game) for game in games]
 
 
@@ -411,7 +411,7 @@ def list_reviews(game_id: int, pagination: Pagination = Depends()):
     """
     with db_session:
         reviews = Game.get(id=game_id).reviews.select()[
-            pagination.offset: pagination.limit
+            pagination.offset : pagination.limit
         ]
         return [db_review_to_preview(r) for r in reviews]
 
@@ -442,20 +442,34 @@ def search(
             c
             for c in Game
             if (
-                term in c.title.lower() or
-                term in c.synopsis_text.lower() or
-                term in c.plot_text.lower() or
-                term in c.characters_text.lower() or
-                term in c.walkthrough_text.lower() or
-                term in c.changelog_text.lower()
-            ) and
-            c.likes <= likes_max and
-            c.likes >= likes_min
+                term in c.title.lower()
+                or term in c.synopsis_text.lower()
+                or term in c.plot_text.lower()
+                or term in c.characters_text.lower()
+                or term in c.walkthrough_text.lower()
+                or term in c.changelog_text.lower()
+            )
+            and c.likes <= likes_max
+            and c.likes >= likes_min
         )
         if play_online is not None:
             if play_online:
                 query = select(c for c in query if c.play_online != "")
             else:
                 query = select(c for c in query if c.play_online == "")
+        games = [db_game_to_pgame(g) for g in query]
+        return games
+
+
+@app.get("/recent", response_model=List[PGameSearchResult], tags=["search"])
+def recent_updates(past_weeks: float = 0, past_days: float = 0, past_hours: float = 0):
+    """
+    Show a specific review for a specific game.
+    """
+    delta = dt.timedelta(days=past_weeks * 7 + past_days, hours=past_hours)
+    with db_session:
+        query = select(
+            c for c in Game if c.last_update >= (dt.datetime.utcnow() - delta)
+        ).order_by(lambda c: c.last_update)
         games = [db_game_to_pgame(g) for g in query]
         return games
