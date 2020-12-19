@@ -416,7 +416,7 @@ def list_reviews(game_id: int, pagination: Pagination = Depends()):
         return [db_review_to_preview(r) for r in reviews]
 
 
-@app.get("/reviews/{game_id}/{review_id}", response_model=PReview, tags=["reviews"])
+@app.get("/reviews/{review_id}", response_model=PReview, tags=["reviews"])
 def show_review(review_id: int):
     """
     Show a specific review for a specific game.
