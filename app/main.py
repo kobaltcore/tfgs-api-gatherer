@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import *
 from fastapi_contrib.pagination import Pagination
 from pydantic import BaseModel, BaseSettings, Field
-from fastapi import FastAPI, Depends, BackgroundTasks  # , HTTPException
+from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 
 ### Security ###
 # from jose import JWTError, jwt
@@ -397,6 +397,8 @@ def show_game(game_id: int):
     """
     with db_session:
         game = Game.get(id=game_id)
+        if not game:
+            raise HTTPException(404, f"Game with ID {game_id} not found")
         return db_game_to_pgame(game)
 
 
@@ -410,7 +412,10 @@ def list_reviews(game_id: int, pagination: Pagination = Depends()):
     List all reviews for a specific game.
     """
     with db_session:
-        reviews = Game.get(id=game_id).reviews.select()[
+        game = Game.get(id=game_id)
+        if not game:
+            raise HTTPException(404, f"Game with ID {game_id} not found")
+        reviews = game.reviews.select()[
             pagination.offset : pagination.limit
         ]
         return [db_review_to_preview(r) for r in reviews]
@@ -423,6 +428,8 @@ def show_review(review_id: int):
     """
     with db_session:
         review = Review.get(id=review_id)
+        if not review:
+            raise HTTPException(404, f"Review with ID {review_id} not found")
         return db_review_to_preview(review)
 
 
