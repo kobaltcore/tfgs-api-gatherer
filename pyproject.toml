@@ -19,6 +19,7 @@ aiohttp = "^3.7.3"
 beautifulsoup4 = "^4.9.3"
 arrow = "^0.17.0"
 python-dotenv = "^0.15.0"
+lxml = "^4.6.2"
 
 [tool.poetry.dev-dependencies]
 
