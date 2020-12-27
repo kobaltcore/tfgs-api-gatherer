@@ -8,6 +8,7 @@ from collections import defaultdict
 ### FastAPI ###
 from typing import *
 from fastapi_contrib.pagination import Pagination
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, BaseSettings, Field
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 
@@ -65,6 +66,14 @@ app = FastAPI(
         },
     ],
     redoc_url=None,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
