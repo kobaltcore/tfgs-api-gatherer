@@ -13,6 +13,7 @@ pony = "^0.7.14"
 pytz = "^2020.4"
 motor = "^2.3.0"
 psycopg2-binary = "^2.8.6"
+uvicorn = "^0.13.2"
 
 [tool.poetry.dev-dependencies]
 
