@@ -1,6 +1,8 @@
 ### System ###
 import os
 import re
+import math
+import shutil
 import asyncio
 import textwrap
 import datetime as dt
@@ -15,16 +17,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, BaseSettings, Field
 from fastapi import FastAPI, Depends, Request, BackgroundTasks, HTTPException
 
-### Security ###
-# from jose import JWTError, jwt
-# from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-
 ### Connectivity ###
 import aiohttp
 
 ### Parsing ###
 import arrow
 from bs4 import BeautifulSoup
+
+### Searching ###
+from whoosh.index import create_in, open_dir
+from whoosh.qparser.dateparse import DateParserPlugin
+from whoosh.qparser import QueryParser, GtLtPlugin, FuzzyTermPlugin
+from whoosh.fields import Schema, ID, TEXT, NUMERIC, DATETIME, BOOLEAN
 
 ### Database ###
 from pony.orm import (
@@ -540,11 +544,12 @@ async def fetch_category(session, name, db_cls):
 
 async def fetch_all_categories(data):
     async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(
-            *[fetch_category(session, name, db_cls) for name, db_cls in data],
-            return_exceptions=True,
-        )
-        return results
+        # results = await asyncio.gather(
+        #     *[fetch_category(session, name, db_cls) for name, db_cls in data],
+        #     return_exceptions=True,
+        # )
+        # return results
+        return [await fetch_category(session, name, db_cls) for name, db_cls in data]
 
 
 async def fetch_page_raw(session, game_id, typ, url):
@@ -713,7 +718,22 @@ def parse_game_page(game_id, html_game, html_reviews):
     return PGame(id=game_id, **data)
 
 
+### Background Tasks ###
+
+schema = Schema(
+    id=ID(stored=True, sortable=True),
+    title=TEXT(stored=True),
+    synopsis=TEXT,
+    likes=NUMERIC(stored=True, sortable=True),
+    last_update=DATETIME(sortable=True),
+    release_date=DATETIME(sortable=True),
+    play_online=BOOLEAN,
+)
+
+
 async def crawl_tfgs():
+    global IX
+    """
     print("Purging Database")
     db.drop_all_tables(with_all_data=True)
     db.create_tables()
@@ -761,7 +781,7 @@ async def crawl_tfgs():
 
         print("Fetching game info")
         all_links = []
-        for url in sorted(game_links)[:100]:
+        for url in sorted(game_links)[:10]:
             game_id = int(url.split("id=")[1])
             all_links.append((game_id, "game", url))
             all_links.append(
@@ -772,16 +792,14 @@ async def crawl_tfgs():
                 )
             )
 
+        from tqdm import tqdm
+
         result = defaultdict(dict)
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=100)
         ) as session:
-            tasks = [
-                fetch_page_raw(session, game_id, typ, url)
-                for game_id, typ, url in all_links
-            ]
-            for task in asyncio.as_completed(tasks):
-                game_id, typ, html = await task
+            for game_id, typ, url in tqdm(all_links):
+                game_id, typ, html = await fetch_page_raw(session, game_id, typ, url)
                 result[game_id][typ] = html
 
         print("Parsing info")
@@ -796,10 +814,35 @@ async def crawl_tfgs():
             try:
                 pgame_to_db_game(game)
             except Exception as e:
-                print(game.id)
-                raise e
+                print(f"Failed on {game.id}: {e}")
+                # raise e
+                continue
 
         print("Done")
+    """
+
+    if os.path.exists("index"):
+        print("Removing existing Index")
+        shutil.rmtree("index")
+
+    print("Creating Index")
+    os.mkdir("index")
+    IX = create_in("index", schema)
+
+    print("Filling Index")
+    writer = IX.writer()
+    with db_session:
+        for game in Game.select():
+            writer.add_document(
+                id=str(game.id),
+                title=game.title,
+                synopsis=game.synopsis_text,
+                likes=game.likes,
+                last_update=arrow.get(game.last_update).datetime,
+                release_date=arrow.get(game.release_date).datetime,
+                play_online=game.play_online != "",
+            )
+    writer.commit()
 
 
 ### Private Routes ###
@@ -830,14 +873,18 @@ def paginate(request, total, data, offset, limit):
     if offset + limit >= total:
         next_url = None
     else:
-        next_url = str(request.url.include_query_params(limit=limit, offset=offset + limit))
+        next_url = str(
+            request.url.include_query_params(limit=limit, offset=offset + limit)
+        )
 
     if offset <= 0:
         prev_url = None
     elif offset - limit <= 0:
         prev_url = str(request.url.remove_query_params(keys=["offset"]))
     else:
-        prev_url = str(request.url.include_query_params(limit=limit, offset=offset - limit))
+        prev_url = str(
+            request.url.include_query_params(limit=limit, offset=offset - limit)
+        )
 
     return {
         "count": len(data),
@@ -858,7 +905,7 @@ def list_games(request: Request, pagination: CustomPagination = Depends()):
     """
     with db_session:
         game_count = count(g for g in Game)
-        games = Game.select()[pagination.offset: pagination.offset + pagination.limit]
+        games = Game.select()[pagination.offset : pagination.offset + pagination.limit]
         data = [db_game_to_pgame(game) for game in games]
         return paginate(request, game_count, data, pagination.offset, pagination.limit)
 
@@ -882,7 +929,9 @@ def show_game(game_id: int):
     response_model=PReviewPaginated,
     tags=["reviews"],
 )
-def list_reviews(game_id: int, request: Request, pagination: CustomPagination = Depends()):
+def list_reviews(
+    game_id: int, request: Request, pagination: CustomPagination = Depends()
+):
     """
     List all reviews for a specific game.
     """
@@ -893,9 +942,13 @@ def list_reviews(game_id: int, request: Request, pagination: CustomPagination = 
             raise HTTPException(404, f"Game with ID {game_id} not found")
 
         review_count = count(r for r in game.reviews)
-        reviews = game.reviews.select()[pagination.offset: pagination.offset + pagination.limit]
+        reviews = game.reviews.select()[
+            pagination.offset : pagination.offset + pagination.limit
+        ]
         data = [db_review_to_preview(r) for r in reviews]
-        return paginate(request, review_count, data, pagination.offset, pagination.limit)
+        return paginate(
+            request, review_count, data, pagination.offset, pagination.limit
+        )
 
 
 @app.get("/reviews/{review_id}", response_model=PReview, tags=["reviews"])
@@ -912,43 +965,78 @@ def show_review(review_id: int):
         return db_review_to_preview(review)
 
 
-@app.get("/search", response_model=List[PGameSearchResult], tags=["search"])
-def search(
-    text: str = "",
-    likes_min: int = 0,
-    likes_max: int = 10_000,
-    play_online: bool = None,
-):
+# @app.get("/search", response_model=List[PGameSearchResult], tags=["search"])
+@app.get("/search", tags=["search"])
+def search(query: str, request: Request, pagination: CustomPagination = Depends()):
+    global IX
     """
-    Show a specific review for a specific game.
+    Search the database.
     """
-    term = text.lower()
 
-    with db_session:
-        query = select(
-            c
-            for c in Game
-            if (
-                term in c.title.lower() or
-                term in c.synopsis_text.lower() or
-                term in c.plot_text.lower() or
-                term in c.characters_text.lower() or
-                term in c.walkthrough_text.lower() or
-                term in c.changelog_text.lower()
-            ) and
-            c.likes <= likes_max and
-            c.likes >= likes_min
+    if not IX:
+        raise HTTPException(500, "Indexing")
+
+    found_items = []
+    with IX.searcher() as searcher:
+        parser = QueryParser("title", IX.schema)
+        parser.add_plugin(GtLtPlugin())
+        parser.add_plugin(FuzzyTermPlugin())
+        parser.add_plugin(DateParserPlugin(free=True))
+
+        parsed_query = parser.parse(query)
+
+        corrected = searcher.correct_query(parsed_query, query)
+        if corrected.query != parsed_query:
+            print("Did you mean:", corrected.string)
+            # if this exists, return with the results
+            # the frontend should then make this a clickable link
+            # which reloads the page with the corrected query string
+
+        results = searcher.search_page(parsed_query, pagenum=pagination.offset + 1, pagelen=pagination.limit)
+
+        print("Page %d of %d" % (results.pagenum, results.pagecount))
+        print(
+            "Showing results %d-%d of %d"
+            % (results.offset + 1, results.offset + results.pagelen, len(results))
         )
+        if (pagination.offset + pagination.limit) > len(results):
+            raise HTTPException(404, "Result page not found")
 
-        if play_online is not None:
-            if play_online:
-                query = select(c for c in query if c.play_online != "")
-            else:
-                query = select(c for c in query if c.play_online == "")
+        for hit in results:
+            found_items.append(
+                {"id": hit["id"], "title": hit["title"], "likes": hit["likes"]}
+            )
 
-        games = [db_game_to_pgame(g) for g in query]
+    return paginate(request, len(results), found_items, pagination.offset, pagination.limit)
+    # return {"results": found_items}
 
-        return games
+    # term = text.lower()
+
+    # with db_session:
+    #     query = select(
+    #         c
+    #         for c in Game
+    #         if (
+    #             term in c.title.lower()
+    #             or term in c.synopsis_text.lower()
+    #             or term in c.plot_text.lower()
+    #             or term in c.characters_text.lower()
+    #             or term in c.walkthrough_text.lower()
+    #             or term in c.changelog_text.lower()
+    #         )
+    #         and c.likes <= likes_max
+    #         and c.likes >= likes_min
+    #     )
+
+    #     if play_online is not None:
+    #         if play_online:
+    #             query = select(c for c in query if c.play_online != "")
+    #         else:
+    #             query = select(c for c in query if c.play_online == "")
+
+    #     games = [db_game_to_pgame(g) for g in query]
+
+    #     return games
 
 
 @app.get("/recent", response_model=List[PGameSearchResult], tags=["search"])
