@@ -733,7 +733,6 @@ schema = Schema(
 
 async def crawl_tfgs():
     global IX
-    """
     print("Purging Database")
     db.drop_all_tables(with_all_data=True)
     db.create_tables()
@@ -781,7 +780,7 @@ async def crawl_tfgs():
 
         print("Fetching game info")
         all_links = []
-        for url in sorted(game_links)[:10]:
+        for url in sorted(game_links)[:100]:
             game_id = int(url.split("id=")[1])
             all_links.append((game_id, "game", url))
             all_links.append(
@@ -818,9 +817,6 @@ async def crawl_tfgs():
                 # raise e
                 continue
 
-        print("Done")
-    """
-
     if os.path.exists("index"):
         print("Removing existing Index")
         shutil.rmtree("index")
@@ -843,6 +839,8 @@ async def crawl_tfgs():
                 play_online=game.play_online != "",
             )
     writer.commit()
+
+    print("Done")
 
 
 ### Private Routes ###
@@ -992,7 +990,9 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
             # the frontend should then make this a clickable link
             # which reloads the page with the corrected query string
 
-        results = searcher.search_page(parsed_query, pagenum=pagination.offset + 1, pagelen=pagination.limit)
+        results = searcher.search_page(
+            parsed_query, pagenum=pagination.offset + 1, pagelen=pagination.limit
+        )
 
         print("Page %d of %d" % (results.pagenum, results.pagecount))
         print(
@@ -1007,7 +1007,9 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
                 {"id": hit["id"], "title": hit["title"], "likes": hit["likes"]}
             )
 
-    return paginate(request, len(results), found_items, pagination.offset, pagination.limit)
+    return paginate(
+        request, len(results), found_items, pagination.offset, pagination.limit
+    )
     # return {"results": found_items}
 
     # term = text.lower()
