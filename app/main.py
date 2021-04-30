@@ -923,7 +923,8 @@ def list_games(request: Request, pagination: CustomPagination = Depends()):
 def recently_released():
     with db_session:
         query = select(c for c in Game).order_by(lambda c: desc(c.release_date))[:10]
-        return [db_game_to_pgame(g) for g in query]
+        data = [db_game_to_pgame(g) for g in query]
+        return data
 
 
 @app.get("/games/list/updated", response_model=List[PGameSearchResult], tags=["games"])
