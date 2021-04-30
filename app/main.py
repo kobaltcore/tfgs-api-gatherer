@@ -235,8 +235,8 @@ class PReview(BaseModel):
 
 class PReviewPaginated(BaseModel):
     count: int
-    next: Optional[str]
-    previous: Optional[str]
+    next: dict
+    previous: dict
     result: List[PReview]
 
 
@@ -312,8 +312,8 @@ class PGameSearchResult(BaseModel):
 
 class PGameSearchResultPaginated(BaseModel):
     count: int
-    next: Optional[str]
-    previous: Optional[str]
+    next: dict
+    previous: dict
     result: List[PGameSearchResult]
 
 
