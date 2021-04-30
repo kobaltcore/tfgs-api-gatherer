@@ -2,6 +2,7 @@
 import os
 import re
 import math
+import random
 import shutil
 import asyncio
 import textwrap
@@ -38,6 +39,7 @@ from pony.orm import (
     db_session,
     select,
     count,
+    desc,
     Optional as dOptional,
     Set as dSet,
 )
@@ -867,7 +869,7 @@ class CustomPagination(Pagination):
     max_limit = 500
 
 
-def paginate(request, total, data, offset, limit):
+def paginate(request, total, data, offset, limit, **kwargs):
     if offset + limit >= total:
         next_url = None
     else:
@@ -886,9 +888,18 @@ def paginate(request, total, data, offset, limit):
 
     return {
         "count": len(data),
-        "next": next_url,
-        "previous": prev_url,
+        "next": {
+            "offset": offset + limit,
+            "limit": limit,
+            "url": next_url,
+        },
+        "previous": {
+            "offset": max(offset - limit, 0),
+            "limit": limit,
+            "url": prev_url,
+        },
         "result": data,
+        **kwargs,
     }
 
 
@@ -908,6 +919,26 @@ def list_games(request: Request, pagination: CustomPagination = Depends()):
         return paginate(request, game_count, data, pagination.offset, pagination.limit)
 
 
+@app.get("/games/list/new", response_model=List[PGameSearchResult], tags=["games"])
+def recently_released():
+    with db_session:
+        query = select(c for c in Game).order_by(lambda c: desc(c.release_date))[:10]
+        return [db_game_to_pgame(g) for g in query]
+
+
+@app.get("/games/list/updated", response_model=List[PGameSearchResult], tags=["games"])
+def recently_updated():
+    with db_session:
+        query = select(c for c in Game).order_by(lambda c: desc(c.last_update))[:10]
+        return [db_game_to_pgame(g) for g in query]
+
+
+@app.get("/games/list/trending", response_model=List[PGameSearchResult], tags=["games"])
+def trending_games():
+    with db_session:
+        return [db_game_to_pgame(g) for g in random.choices(list(Game.select()), k=10)]
+
+
 @app.get("/games/{game_id}", response_model=PGameReduced, tags=["games"])
 def show_game(game_id: int):
     """
@@ -923,7 +954,7 @@ def show_game(game_id: int):
 
 
 @app.get(
-    "/reviews/{game_id}/list",
+    "/reviews/list/{game_id}",
     response_model=PReviewPaginated,
     tags=["reviews"],
 )
@@ -970,10 +1001,6 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
     """
     Search the database.
     """
-
-    if not IX:
-        raise HTTPException(500, "Indexing")
-
     found_items = []
     with IX.searcher() as searcher:
         parser = QueryParser("title", IX.schema)
@@ -983,23 +1010,19 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
 
         parsed_query = parser.parse(query)
 
+        suggestion = None
         corrected = searcher.correct_query(parsed_query, query)
         if corrected.query != parsed_query:
-            print("Did you mean:", corrected.string)
-            # if this exists, return with the results
-            # the frontend should then make this a clickable link
-            # which reloads the page with the corrected query string
+            suggestion = corrected.string
 
+        page_num = math.floor(pagination.offset / pagination.limit) + 1
         results = searcher.search_page(
-            parsed_query, pagenum=pagination.offset + 1, pagelen=pagination.limit
+            parsed_query,
+            pagenum=page_num,
+            pagelen=pagination.limit,
         )
 
-        print("Page %d of %d" % (results.pagenum, results.pagecount))
-        print(
-            "Showing results %d-%d of %d"
-            % (results.offset + 1, results.offset + results.pagelen, len(results))
-        )
-        if (pagination.offset + pagination.limit) > len(results):
+        if results.pagenum > results.pagecount:
             raise HTTPException(404, "Result page not found")
 
         for hit in results:
@@ -1008,49 +1031,12 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
             )
 
     return paginate(
-        request, len(results), found_items, pagination.offset, pagination.limit
+        request,
+        results.total,
+        found_items,
+        pagination.offset,
+        pagination.limit,
+        suggestion=suggestion,
+        page_num=results.pagenum,
+        total_pages=results.pagecount,
     )
-    # return {"results": found_items}
-
-    # term = text.lower()
-
-    # with db_session:
-    #     query = select(
-    #         c
-    #         for c in Game
-    #         if (
-    #             term in c.title.lower()
-    #             or term in c.synopsis_text.lower()
-    #             or term in c.plot_text.lower()
-    #             or term in c.characters_text.lower()
-    #             or term in c.walkthrough_text.lower()
-    #             or term in c.changelog_text.lower()
-    #         )
-    #         and c.likes <= likes_max
-    #         and c.likes >= likes_min
-    #     )
-
-    #     if play_online is not None:
-    #         if play_online:
-    #             query = select(c for c in query if c.play_online != "")
-    #         else:
-    #             query = select(c for c in query if c.play_online == "")
-
-    #     games = [db_game_to_pgame(g) for g in query]
-
-    #     return games
-
-
-@app.get("/recent", response_model=List[PGameSearchResult], tags=["search"])
-def recent_updates(past_weeks: float = 0, past_days: float = 0, past_hours: float = 0):
-    """
-    Show a specific review for a specific game.
-    """
-    delta = dt.timedelta(days=past_weeks * 7 + past_days, hours=past_hours)
-
-    with db_session:
-        query = select(
-            c for c in Game if c.last_update >= (dt.datetime.utcnow() - delta)
-        ).order_by(lambda c: c.last_update)
-        games = [db_game_to_pgame(g) for g in query]
-        return games
