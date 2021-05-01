@@ -49,8 +49,6 @@ class Settings(BaseSettings):
     DB_TYPE: str = "postgres"
     DB_FILE: str = None
     DATABASE_URL: str = None
-    BASE_URL: str = "https://tfgames.site"
-    SYSTEM_KEY: str
 
     class Config:
         env_file = ".env"
@@ -89,6 +87,10 @@ app = FastAPI(
         {
             "name": "reviews",
             "description": "Operations on game reviews.",
+        },
+        {
+            "name": "search",
+            "description": "Search operations.",
         },
     ],
     redoc_url=None,
@@ -241,7 +243,7 @@ class PReview(BaseModel):
     text: str
 
 
-class PReviewPaginated(BaseModel):
+class PReviewSearchResultPaginated(BaseModel):
     count: int
     next: dict
     previous: dict
@@ -274,7 +276,7 @@ class PGame(BaseModel):
     changelog: Optional[Dict[str, str]]
 
 
-class PGameReduced(BaseModel):
+class PGameResult(BaseModel):
     id: int
     title: str
     authors: Dict[str, int]
@@ -291,31 +293,19 @@ class PGameReduced(BaseModel):
     themes: Optional[dict]
     thread: Optional[str]
     play_online: Optional[str]
-    versions: Optional[dict]
-    synopsis: Optional[Dict[str, str]]
-    plot: Optional[Dict[str, str]]
-    characters: Optional[Dict[str, str]]
-    walkthrough: Optional[Dict[str, str]]
-    changelog: Optional[Dict[str, str]]
+
+
+class PGameResultPaginated(BaseModel):
+    count: int
+    next: dict
+    previous: dict
+    result: List[PGameResult]
 
 
 class PGameSearchResult(BaseModel):
     id: int
     title: str
-    authors: Dict[str, int]
-    game_engine: str
-    content_rating: str
-    language: str
-    release_date: dt.datetime
-    last_update: dt.datetime
-    version: str
-    development_stage: str
     likes: int
-    contest: Optional[str]
-    orig_pc_gender: Optional[str]
-    themes: Optional[dict]
-    thread: Optional[str]
-    play_online: Optional[str]
 
 
 class PGameSearchResultPaginated(BaseModel):
@@ -325,50 +315,14 @@ class PGameSearchResultPaginated(BaseModel):
     result: List[PGameSearchResult]
 
 
-class Topic(BaseModel):
-    title: str
-    last_author: str
-    last_post_time: dt.datetime
-
-
-class User(BaseModel):
-    username: str
-    groups: List[str]
-    joined: dt.datetime
-    warnings: int
-    total_posts: int
-
-
-class TFGSAuthInfo(BaseModel):
-    __cfduid: str
-    phpbb3_tfgs_u: str
-    phpbb3_tfgs_sid: str
-    phpbb3_tfgs_k: Optional[str]
-
-
-class UserWithTFGSAuthInfo(User, TFGSAuthInfo):
-    pass
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
 ### Events ###
 
 
-@app.on_event("startup")
 @repeat_every(seconds=60 * 60)  # 1 hour
 def trigger_reindex():
     global SEARCHER
     print("Refreshing search engine index")
     SEARCHER = SEARCHER.refresh()
-
-
-# @app.on_event("shutdown")
-# def shutdown_event():
-#     pass
 
 
 ### Utility Methods ###
@@ -389,15 +343,7 @@ def db_game_to_pgame(game):
 
     reviews = []
     for review in game.reviews:
-        reviews.append(
-            PReview(
-                id=review.id,
-                author=review.author,
-                version=review.version,
-                date=review.date,
-                text=review.text,
-            )
-        )
+        reviews.append(db_review_to_preview(review))
 
     return PGame(
         id=game.id,
@@ -436,334 +382,14 @@ def db_review_to_preview(review):
     )
 
 
-def pgame_to_db_game(game):
-    db_game = Game.get(id=game.id)
-
-    if db_game:
-        return db_game
-
-    for k, v in game.authors.items():
-        author = GameAuthor.get(name=k, id=v)
-        if not author:
-            GameAuthor(id=v, name=k)
-
-    db_game = Game(
-        id=game.id,
-        title=game.title,
-        authors=[GameAuthor.get(id=v) for v in game.authors.values()],
-        version=game.version or "1.0.0",
-        engine=GameEngine.get(name=game.game_engine),
-        content_rating=ContentRating.get(name=game.content_rating),
-        language=game.language,
-        release_date=game.release_date,
-        last_update=game.last_update,
-        development_stage=game.development_stage,
-        likes=game.likes,
-        contest=game.contest or "",
-        orig_pc_gender=game.orig_pc_gender,
-        adult_themes=[AdultTheme.get(id=v) for v in game.themes["adult"].values()]
-        if game.themes
-        else [],
-        transformation_themes=[
-            TransformationTheme.get(id=v)
-            for v in game.themes["transformation"].values()
-        ]
-        if game.themes
-        else [],
-        multimedia_themes=[
-            MultimediaTheme.get(id=v) for v in game.themes["multimedia"].values()
-        ]
-        if game.themes
-        else [],
-        thread=game.thread or "",
-        play_online=game.play_online or "",
-        synopsis_text=game.synopsis["text"] if game.synopsis else "",
-        synopsis_html=game.synopsis["html"] if game.synopsis else "",
-        plot_text=game.plot["text"] if game.plot else "",
-        plot_html=game.plot["html"] if game.plot else "",
-        characters_text=game.characters["text"] if game.characters else "",
-        characters_html=game.characters["html"] if game.characters else "",
-        walkthrough_text=game.walkthrough["text"] if game.walkthrough else "",
-        walkthrough_html=game.walkthrough["html"] if game.walkthrough else "",
-        changelog_text=game.changelog["text"] if game.changelog else "",
-        changelog_html=game.changelog["html"] if game.changelog else "",
-    )
-
-    db_versions = []
-    for version, downloads in game.versions.items():
-        db_downloads = []
-
-        version = GameVersion(version=version, game=db_game)
-        for download in downloads:
-            db_downloads.append(
-                GameDownload(
-                    delete=download["delete"] or "",
-                    link=download["link"],
-                    note=download["note"] or "",
-                    report=download["report"],
-                    game_version=version,
-                )
-            )
-        version.downloads = db_downloads
-        db_versions.append(version)
-
-    db_game.versions = db_versions
-
-    reviews = []
-    for review in game.reviews:
-        reviews.append(
-            Review(
-                author=review.author,
-                text=review.text,
-                date=review.date,
-                version=review.version,
-                game=db_game,
-            )
-        )
-
-    db_game.reviews = reviews
-
-    return db_game
-
-
-### Parsing Methods ###
-
-
-async def parse_category(html, name, db_cls):
-    soup = BeautifulSoup(html, "lxml")
-
-    objects = []
-    for item in soup.find_all("div", class_="browsecontainer"):
-        data = item.find("a")
-        _name = data.text
-        _link = f'"https://tfgames.site/{data["href"]}'
-        _id = int(_link.split(f"{name}=")[1])
-        _repr = _name.lower().replace(" ", "_")
-        objects.append(db_cls(id=_id, name=_repr))
-
-    return objects
-
-
-async def fetch_category(session, name, db_cls):
-    async with session.get(
-        f"https://tfgames.site/?module=browse&by={name}"
-    ) as response:
-        html = await response.text("latin-1")
-        data = await parse_category(html, name, db_cls)
-        return data
-
-
-async def fetch_all_categories(data):
-    async with aiohttp.ClientSession() as session:
-        # results = await asyncio.gather(
-        #     *[fetch_category(session, name, db_cls) for name, db_cls in data],
-        #     return_exceptions=True,
-        # )
-        # return results
-        return [await fetch_category(session, name, db_cls) for name, db_cls in data]
-
-
-async def fetch_page_raw(session, game_id, typ, url):
-    async with session.get(url, verify_ssl=False) as response:
-        html = await response.text("latin-1")
-    return game_id, typ, html
-
-
-def parse_game_page(game_id, html_game, html_reviews):
-    item = BeautifulSoup(html_game, features="lxml")
-    reviews_soup = BeautifulSoup(html_reviews, features="lxml")
-
-    data = defaultdict(lambda: defaultdict(dict))
-    data["authors"] = {}
-    data["versions"] = defaultdict(list)
-    data["play_online"] = None
-    data["likes"] = 0
-    data["reviews"] = []
-
-    data["title"] = item.find(class_="viewgamecontenttitle").text.strip()
-
-    # Game
-
-    container = item.find(class_="viewgamecontentauthor")
-    links = container.find_all("a")
-    if links:
-        for link in links:
-            try:
-                data["authors"][link.text.lower().replace(" ", "_")] = int(
-                    link.get("href").split("u=")[1]
-                )
-            except:
-                continue
-    else:
-        try:
-            author = (
-                container.text.strip().lstrip("by").strip().lower().replace(" ", "_")
-            )
-            data["authors"][author] = GameAuthor.get(name=author).id
-        except:
-            return
-
-    game_info = item.select(".viewgamesidecontainer > .viewgameanothercontainer")[0]
-
-    for box in game_info.find_all(class_="viewgameinfo"):
-        left = box.find(class_="viewgameitemleft").text
-        right = box.find(class_="viewgameitemright")
-
-        if left == "Engine":
-            data["game_engine"] = right.text.lower().replace(" ", "_")
-        elif left == "Rating":
-            data["content_rating"] = right.text.lower().replace(" ", "_")
-        elif left == "Language":
-            data["language"] = right.text
-        elif left == "Release Date":
-            result = right.text
-            try:
-                data["release_date"] = arrow.get(
-                    result, "|DD MMM YYYY|, HH:mm"
-                ).datetime
-            except:
-                pass
-            try:
-                data["release_date"] = arrow.get(result, "MM/DD/YYYY").datetime
-            except:
-                pass
-        elif left == "Last Update":
-            result = right.text
-            try:
-                data["last_update"] = arrow.get(result, "|DD MMM YYYY|, HH:mm").datetime
-            except:
-                pass
-            try:
-                data["last_update"] = arrow.get(result, "MM/DD/YYYY").datetime
-            except:
-                pass
-        elif left == "Version":
-            data["version"] = right.text
-        elif left == "Development":
-            data["development_stage"] = right.text
-        elif left == "Likes":
-            data["likes"] = int(right.text)
-        elif left == "Contest":
-            result = right.text
-            data["contest"] = None if result == "None" else result
-        elif left == "Orig PC Gender":
-            data["orig_pc_gender"] = right.text
-        elif left == "Adult Themes":
-            for link in right.find_all("a"):
-                data["themes"]["adult"][link.text] = int(
-                    link.get("href").split("adult=")[1]
-                )
-        elif left == "TF Themes":
-            for link in right.find_all("a"):
-                data["themes"]["transformation"][link.text] = int(
-                    link.get("href").split("transformation=")[1]
-                )
-        elif left == "Multimedia":
-            for link in right.find_all("a"):
-                data["themes"]["multimedia"][link.text] = int(
-                    link.get("href").split("multimedia=")[1]
-                )
-        elif left == "Discussion/Help":
-            data["thread"] = right.find("a").get("href")
-
-    downloads = item.find(id="downloads")
-
-    for container in downloads:
-        if container.name == "center":
-            version = container.text.lstrip("Version:").strip()
-        elif container.name == "div":
-            link = {}
-            link["delete"] = container.find(class_="dldeadlink").find("a")
-            link["link"] = container.find(class_="dltext").find("a").get("href")
-            try:
-                link["note"] = container.find(class_="dlnotes").find("img").get("title")
-            except:
-                link["note"] = None
-            link["report"] = urljoin(
-                config.BASE_URL,
-                container.find(class_="dlreportdeadlink").find("a").get("href"),
-            )
-            data["versions"][version or data["version"]].append(link)
-
-    for i in range(1, 6):
-        tab = item.find(id=f"tabs-{i}")
-        if not tab:
-            continue
-        title = item.find("a", {"href": f"#tabs-{i}"}).text
-        data[title.lower()] = {}
-        data[title.lower()]["text"] = tab.text
-        data[title.lower()]["html"] = str(tab)
-
-    play_online = item.find(id="play")
-    if play_online:
-        data["play_online"] = play_online.find("form").get("action")
-
-    # Reviews
-
-    for i, review in enumerate(reversed(reviews_soup.find_all(class_="reviewcontent"))):
-        lines = [line for line in review.text.split("\n") if line.strip()]
-        if "Review by" not in lines[0]:
-            continue
-        author = lines[0].lstrip("Review by").strip()
-        m = re.match(r"Version reviewed: (.+) on (.*)", lines[1])
-        if not m:
-            continue
-        version, date = m.groups()
-        try:
-            date = arrow.get(date, "YYYY-MM-DD HH:mm:ss")
-        except:
-            date = arrow.get(date, "MM/DD/YYYY HH:mm:ss")
-        text = "\n".join(lines[2:])
-        if not text:
-            continue
-        data["reviews"].append(
-            PReview(
-                id=i,
-                author=author,
-                version=version,
-                date=date.datetime,
-                text=text,
-            )
-        )
-
-    return PGame(id=game_id, **data)
-
-
-### Background Tasks ###
-
-schema = Schema(
-    id=ID(stored=True, sortable=True),
-    title=TEXT(stored=True),
-    synopsis=TEXT,
-    likes=NUMERIC(stored=True, sortable=True),
-    last_update=DATETIME(sortable=True),
-    release_date=DATETIME(sortable=True),
-    play_online=BOOLEAN,
-)
-
-
-### Private Routes ###
-
-
-@app.post("/crawl", tags=["system"])
-def trigger_crawl(system_key: str, background_tasks: BackgroundTasks):
-    """
-    Crawls TFGS and upserts new data into the database.
-    """
-    if system_key != config.SYSTEM_KEY:
-        raise HTTPException(401, "Incorrect system key")
-
-    background_tasks.add_task(reindex)
-
-
 ### Public Routes ###
 
 
 class CustomPagination(Pagination):
     default_offset = 0
     default_limit = 10
-    max_offset = 100
-    max_limit = 500
+    max_offset = 1000
+    max_limit = 100
 
 
 def paginate(request, total, data, offset, limit, **kwargs):
@@ -802,106 +428,88 @@ def paginate(request, total, data, offset, limit, **kwargs):
 
 @app.get(
     "/games/list",
-    response_model=PGameSearchResultPaginated,
+    response_model=PGameResultPaginated,
     tags=["games"],
 )
+@db_session
 def list_games(request: Request, pagination: CustomPagination = Depends()):
-    """
-    List all games in the TFGS database.
-    """
-    with db_session:
-        game_count = count(g for g in Game)
-        games = Game.select()[pagination.offset : pagination.offset + pagination.limit]
-        data = [db_game_to_pgame(game) for game in games]
-        return paginate(request, game_count, data, pagination.offset, pagination.limit)
+    game_count = count(g for g in Game)
+    games = Game.select()[pagination.offset : pagination.offset + pagination.limit]
+    data = [db_game_to_pgame(game) for game in games]
+    return paginate(request, game_count, data, pagination.offset, pagination.limit)
 
 
-@app.get("/games/list/new", response_model=List[PGameSearchResult], tags=["games"])
+@app.get("/games/list/new", response_model=List[PGameResult], tags=["games"])
+@db_session
 def recently_released():
-    with db_session:
-        query = select(c for c in Game).order_by(lambda c: desc(c.release_date))[:10]
-        data = [db_game_to_pgame(g) for g in query]
-        return data
+    query = select(c for c in Game).order_by(lambda c: desc(c.release_date))[:10]
+    data = [db_game_to_pgame(g) for g in query]
+    return data
 
 
-@app.get("/games/list/updated", response_model=List[PGameSearchResult], tags=["games"])
+@app.get("/games/list/updated", response_model=List[PGameResult], tags=["games"])
+@db_session
 def recently_updated():
-    with db_session:
-        query = select(c for c in Game).order_by(lambda c: desc(c.last_update))[:10]
-        return [db_game_to_pgame(g) for g in query]
+    query = select(c for c in Game).order_by(lambda c: desc(c.last_update))[:10]
+    return [db_game_to_pgame(g) for g in query]
 
 
-@app.get("/games/list/trending", response_model=List[PGameSearchResult], tags=["games"])
+@app.get("/games/list/trending", response_model=List[PGameResult], tags=["games"])
+@db_session
 def trending_games():
-    with db_session:
-        return [
-            db_game_to_pgame(g)
-            for g in select(g for g in Game if random.random() > 0.99)[:10]
-        ]
+    return [
+        db_game_to_pgame(g)
+        for g in select(g for g in Game if random.random() > 0.99)[:10]
+    ]
 
 
-@app.get("/games/{game_id}", response_model=PGameReduced, tags=["games"])
+@app.get("/games/{game_id}", response_model=PGame, tags=["games"])
+@db_session
 def show_game(game_id: int):
-    """
-    Show more detailed data for a specific game.
-    """
-    with db_session:
-        game = Game.get(id=game_id)
+    game = Game.get(id=game_id)
 
-        if not game:
-            raise HTTPException(404, f"Game with ID {game_id} not found")
+    if not game:
+        raise HTTPException(404, f"Game with ID {game_id} not found")
 
-        return db_game_to_pgame(game)
+    return db_game_to_pgame(game)
 
 
 @app.get(
     "/reviews/list/{game_id}",
-    response_model=PReviewPaginated,
+    response_model=PReviewSearchResultPaginated,
     tags=["reviews"],
 )
+@db_session
 def list_reviews(
     game_id: int, request: Request, pagination: CustomPagination = Depends()
 ):
-    """
-    List all reviews for a specific game.
-    """
-    with db_session:
-        game = Game.get(id=game_id)
+    game = Game.get(id=game_id)
 
-        if not game:
-            raise HTTPException(404, f"Game with ID {game_id} not found")
+    if not game:
+        raise HTTPException(404, f"Game with ID {game_id} not found")
 
-        review_count = count(r for r in game.reviews)
-        reviews = game.reviews.select()[
-            pagination.offset : pagination.offset + pagination.limit
-        ]
-        data = [db_review_to_preview(r) for r in reviews]
-        return paginate(
-            request, review_count, data, pagination.offset, pagination.limit
-        )
+    review_count = count(r for r in game.reviews)
+    reviews = game.reviews.select()[
+        pagination.offset : pagination.offset + pagination.limit
+    ]
+    data = [db_review_to_preview(r) for r in reviews]
+    return paginate(request, review_count, data, pagination.offset, pagination.limit)
 
 
 @app.get("/reviews/{review_id}", response_model=PReview, tags=["reviews"])
+@db_session
 def show_review(review_id: int):
-    """
-    Show a specific review for a specific game.
-    """
-    with db_session:
-        review = Review.get(id=review_id)
+    review = Review.get(id=review_id)
 
-        if not review:
-            raise HTTPException(404, f"Review with ID {review_id} not found")
+    if not review:
+        raise HTTPException(404, f"Review with ID {review_id} not found")
 
-        return db_review_to_preview(review)
+    return db_review_to_preview(review)
 
 
-# @app.get("/search", response_model=List[PGameSearchResult], tags=["search"])
-@app.get("/search", tags=["search"])
+@app.get("/search", response_model=PGameSearchResultPaginated, tags=["search"])
 def search(query: str, request: Request, pagination: CustomPagination = Depends()):
     global SEARCHER, QUERY_PARSER
-    """
-    Search the database.
-    """
     found_items = []
     parsed_query = QUERY_PARSER.parse(query)
 
@@ -915,11 +523,11 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
     results = SEARCHER.search_page(
         parsed_query,
         pagenum=page_num,
-        pagelen=20,
+        pagelen=pagination.limit,
     )
 
-    if results.pagenum > results.pagecount:
-        raise HTTPException(404, "Result page not found")
+    if page_num > results.pagecount:
+        raise HTTPException(404, "Requested page out of range")
 
     for hit in results:
         found_items.append(
