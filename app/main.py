@@ -60,6 +60,14 @@ class Settings(BaseSettings):
 config = Settings()
 
 
+SEARCH_INDEX = open_dir("index")
+SEARCHER = SEARCH_INDEX.searcher()
+QUERY_PARSER = QueryParser("title", SEARCH_INDEX.schema)
+QUERY_PARSER.add_plugin(GtLtPlugin())
+QUERY_PARSER.add_plugin(FuzzyTermPlugin())
+QUERY_PARSER.add_plugin(DateParserPlugin(free=True))
+
+
 app = FastAPI(
     title="TFGS API",
     description=textwrap.dedent(
@@ -352,9 +360,10 @@ class Token(BaseModel):
 
 @app.on_event("startup")
 @repeat_every(seconds=60 * 60)  # 1 hour
-async def trigger_crawl_tfgs():
-    print("Running scheduled crawl task")
-    await crawl_tfgs()
+def trigger_reindex():
+    global SEARCHER
+    print("Refreshing search engine index")
+    SEARCHER = SEARCHER.refresh()
 
 
 # @app.on_event("shutdown")
@@ -733,118 +742,6 @@ schema = Schema(
 )
 
 
-async def crawl_tfgs():
-    global IX
-    print("Purging Database")
-    db.drop_all_tables(with_all_data=True)
-    db.create_tables()
-
-    with db_session:
-        print("Fetching Categories")
-        result = await fetch_all_categories(
-            [
-                ("engine", GameEngine),
-                ("rating", ContentRating),
-                ("adult", AdultTheme),
-                ("transformation", TransformationTheme),
-                ("multimedia", MultimediaTheme),
-                ("author", GameAuthor),
-            ]
-        )
-
-        print("Fetching list of games")
-        payload = "module=search&search=1&likesmin=0&likesmax=0&development%5B%5D=11&development%5B%5D=12&development%5B%5D=18&development%5B%5D=41&development%5B%5D=46&development%5B%5D=47"
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://tfgames.site/index.php", data=payload, headers=headers
-            ) as response:
-                if not response.status == 200:
-                    raise Exception("Not status code 200")
-                html = await response.text("latin-1")
-
-        soup = BeautifulSoup(html, features="lxml")
-
-        table = soup.find("table")
-
-        game_links = []
-        for row in table.find_all("tr"):
-            cols = row.find_all("td")
-
-            if not cols:
-                continue
-
-            game_links.append(
-                urljoin(config.BASE_URL, f'/{cols[0].find("a").get("href")}')
-            )
-
-        print("Fetching game info")
-        all_links = []
-        for url in sorted(game_links)[:100]:
-            game_id = int(url.split("id=")[1])
-            all_links.append((game_id, "game", url))
-            all_links.append(
-                (
-                    game_id,
-                    "reviews",
-                    f"https://tfgames.site/modules/viewgame/viewreviews.php?id={game_id}",
-                )
-            )
-
-        from tqdm import tqdm
-
-        result = defaultdict(dict)
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=100)
-        ) as session:
-            for game_id, typ, url in tqdm(all_links):
-                game_id, typ, html = await fetch_page_raw(session, game_id, typ, url)
-                result[game_id][typ] = html
-
-        print("Parsing info")
-        games = []
-        for game_id, data in result.items():
-            game = parse_game_page(game_id, data["game"], data["reviews"])
-            if game:
-                games.append(game)
-
-        print("Writing to database")
-        for game in games:
-            try:
-                pgame_to_db_game(game)
-            except Exception as e:
-                print(f"Failed on {game.id}: {e}")
-                # raise e
-                continue
-
-    if os.path.exists("index"):
-        print("Removing existing Index")
-        shutil.rmtree("index")
-
-    print("Creating Index")
-    os.mkdir("index")
-    IX = create_in("index", schema)
-
-    print("Filling Index")
-    writer = IX.writer()
-    with db_session:
-        for game in Game.select():
-            writer.add_document(
-                id=str(game.id),
-                title=game.title,
-                synopsis=game.synopsis_text,
-                likes=game.likes,
-                last_update=arrow.get(game.last_update).datetime,
-                release_date=arrow.get(game.release_date).datetime,
-                play_online=game.play_online != "",
-            )
-    writer.commit()
-
-    print("Done")
-
-
 ### Private Routes ###
 
 
@@ -856,7 +753,7 @@ def trigger_crawl(system_key: str, background_tasks: BackgroundTasks):
     if system_key != config.SYSTEM_KEY:
         raise HTTPException(401, "Incorrect system key")
 
-    background_tasks.add_task(crawl_tfgs)
+    background_tasks.add_task(reindex)
 
 
 ### Public Routes ###
@@ -937,7 +834,10 @@ def recently_updated():
 @app.get("/games/list/trending", response_model=List[PGameSearchResult], tags=["games"])
 def trending_games():
     with db_session:
-        return [db_game_to_pgame(g) for g in random.choices(list(Game.select()), k=10)]
+        return [
+            db_game_to_pgame(g)
+            for g in select(g for g in Game if random.random() > 0.99)[:10]
+        ]
 
 
 @app.get("/games/{game_id}", response_model=PGameReduced, tags=["games"])
@@ -998,38 +898,33 @@ def show_review(review_id: int):
 # @app.get("/search", response_model=List[PGameSearchResult], tags=["search"])
 @app.get("/search", tags=["search"])
 def search(query: str, request: Request, pagination: CustomPagination = Depends()):
-    global IX
+    global SEARCHER, QUERY_PARSER
     """
     Search the database.
     """
     found_items = []
-    with IX.searcher() as searcher:
-        parser = QueryParser("title", IX.schema)
-        parser.add_plugin(GtLtPlugin())
-        parser.add_plugin(FuzzyTermPlugin())
-        parser.add_plugin(DateParserPlugin(free=True))
+    parsed_query = QUERY_PARSER.parse(query)
 
-        parsed_query = parser.parse(query)
+    suggestion = None
+    corrected = SEARCHER.correct_query(parsed_query, query)
+    if corrected.query != parsed_query:
+        suggestion = corrected.string
 
-        suggestion = None
-        corrected = searcher.correct_query(parsed_query, query)
-        if corrected.query != parsed_query:
-            suggestion = corrected.string
+    page_num = math.floor(pagination.offset / pagination.limit) + 1
 
-        page_num = math.floor(pagination.offset / pagination.limit) + 1
-        results = searcher.search_page(
-            parsed_query,
-            pagenum=page_num,
-            pagelen=pagination.limit,
+    results = SEARCHER.search_page(
+        parsed_query,
+        pagenum=page_num,
+        pagelen=20,
+    )
+
+    if results.pagenum > results.pagecount:
+        raise HTTPException(404, "Result page not found")
+
+    for hit in results:
+        found_items.append(
+            {"id": hit["id"], "title": hit["title"], "likes": hit["likes"]}
         )
-
-        if results.pagenum > results.pagecount:
-            raise HTTPException(404, "Result page not found")
-
-        for hit in results:
-            found_items.append(
-                {"id": hit["id"], "title": hit["title"], "likes": hit["likes"]}
-            )
 
     return paginate(
         request,
