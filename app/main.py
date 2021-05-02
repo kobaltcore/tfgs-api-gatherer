@@ -313,6 +313,9 @@ class PGameSearchResultPaginated(BaseModel):
     next: dict
     previous: dict
     result: List[PGameSearchResult]
+    suggestion: Optional[str]
+    page_num: int
+    total_pages: int
 
 
 ### Events ###
