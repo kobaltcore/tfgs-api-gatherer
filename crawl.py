@@ -44,8 +44,8 @@ from pony.orm import (
 
 
 class Settings(BaseSettings):
-    DB_TYPE: str = "postgres"
-    DB_FILE: str = None
+    DB_TYPE: str = "sqlite"
+    DB_FILE: str = "db.sqlite"
     DATABASE_URL: str = None
     BASE_URL: str = "https://tfgames.site"
 
