@@ -29,8 +29,6 @@ class Settings(BaseSettings):
     DB_TYPE: str = "postgres"
     DB_FILE: str = None
     DATABASE_URL: str = None
-    BASE_URL: str = "https://tfgames.site"
-    SYSTEM_KEY: str
 
     class Config:
         env_file = ".env"
