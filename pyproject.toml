@@ -21,6 +21,9 @@ arrow = "^1.1.0"
 python-dotenv = "^0.17.1"
 lxml = "^4.6.3"
 Whoosh = "^2.7.4"
+tqdm = "^4.60.0"
+rich = "^10.1.0"
+requests = "^2.25.1"
 
 [tool.poetry.dev-dependencies]
 
