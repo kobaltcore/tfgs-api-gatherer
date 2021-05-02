@@ -248,6 +248,8 @@ class PReviewSearchResultPaginated(BaseModel):
     next: dict
     previous: dict
     result: List[PReview]
+    page_num: int
+    total_pages: int
 
 
 class PGame(BaseModel):
@@ -496,7 +498,15 @@ def list_reviews(
         pagination.offset : pagination.offset + pagination.limit
     ]
     data = [db_review_to_preview(r) for r in reviews]
-    return paginate(request, review_count, data, pagination.offset, pagination.limit)
+    return paginate(
+        request,
+        review_count,
+        data,
+        pagination.offset,
+        pagination.limit,
+        page_num=math.floor(pagination.offset / pagination.limit) + 1,
+        total_pages=math.ceil(review_count / pagination.limit),
+    )
 
 
 @app.get("/reviews/{review_id}", response_model=PReview, tags=["reviews"])
@@ -528,9 +538,6 @@ def search(query: str, request: Request, pagination: CustomPagination = Depends(
         pagenum=page_num,
         pagelen=pagination.limit,
     )
-
-    if page_num > results.pagecount:
-        raise HTTPException(404, "Requested page out of range")
 
     for hit in results:
         found_items.append(
