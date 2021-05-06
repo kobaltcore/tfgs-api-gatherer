@@ -43,7 +43,7 @@ db = Database()
 class Game(db.Entity):
     id = PrimaryKey(int, auto=True)
     title = Required(str)
-    engine = Required("GameEngine")
+    engine = Required("Engine")
     content_rating = Required("ContentRating")
     language = Required(str)
     release_date = Required(dt.datetime)
@@ -68,12 +68,12 @@ class Game(db.Entity):
     walkthrough_html = dOptional(str)
     changelog_text = dOptional(str)
     changelog_html = dOptional(str)
-    authors = dSet("GameAuthor")
-    versions = dSet("GameVersion")
+    authors = dSet("Author")
+    downloads = dSet("Download")
     reviews = dSet("Review")
 
 
-class GameEngine(db.Entity):
+class Engine(db.Entity):
     id = PrimaryKey(int, auto=True)
     name = Required(str)
     games = dSet(Game)
@@ -103,25 +103,19 @@ class MultimediaTheme(db.Entity):
     games = dSet(Game)
 
 
-class GameAuthor(db.Entity):
+class Author(db.Entity):
     id = PrimaryKey(int, auto=True)
     name = Required(str)
     games = dSet(Game)
 
 
-class GameDownload(db.Entity):
+class Download(db.Entity):
     id = PrimaryKey(int, auto=True)
     link = Required(str)
     report = Required(str)
-    note = dOptional(str)
-    delete = dOptional(str)
-    game_version = Required("GameVersion")
-
-
-class GameVersion(db.Entity):
-    id = PrimaryKey(int, auto=True)
-    version = Required(str)
-    downloads = dSet(GameDownload)
+    note = dOptional(str, nullable=True)
+    delete = dOptional(str, nullable=True)
+    game_version = Required(str)
     game = Required(Game)
 
 
