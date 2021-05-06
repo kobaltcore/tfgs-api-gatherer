@@ -10,7 +10,7 @@ import asyncio
 import datetime as dt
 from collections import defaultdict
 from urllib.parse import urljoin, urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 ### Console ###
 from tqdm.rich import tqdm
@@ -29,15 +29,12 @@ import arrow
 from bs4 import BeautifulSoup
 
 ### Database ###
-from psycopg2.extras import execute_values
+import pugsql
 from pony.orm import (
     Database,
     PrimaryKey,
     Required,
     db_session,
-    # select,
-    # count,
-    commit,
     Optional as dOptional,
     Set as dSet,
 )
@@ -64,7 +61,7 @@ db = Database()
 class Game(db.Entity):
     id = PrimaryKey(int, auto=True)
     title = Required(str)
-    engine = Required("GameEngine")
+    engine = Required("Engine")
     content_rating = Required("ContentRating")
     language = Required(str)
     release_date = Required(dt.datetime)
@@ -89,12 +86,12 @@ class Game(db.Entity):
     walkthrough_html = dOptional(str)
     changelog_text = dOptional(str)
     changelog_html = dOptional(str)
-    authors = dSet("GameAuthor")
-    versions = dSet("GameVersion")
+    authors = dSet("Author")
+    downloads = dSet("Download")
     reviews = dSet("Review")
 
 
-class GameEngine(db.Entity):
+class Engine(db.Entity):
     id = PrimaryKey(int, auto=True)
     name = Required(str)
     games = dSet(Game)
@@ -124,25 +121,19 @@ class MultimediaTheme(db.Entity):
     games = dSet(Game)
 
 
-class GameAuthor(db.Entity):
+class Author(db.Entity):
     id = PrimaryKey(int, auto=True)
     name = Required(str)
     games = dSet(Game)
 
 
-class GameDownload(db.Entity):
+class Download(db.Entity):
     id = PrimaryKey(int, auto=True)
     link = Required(str)
     report = Required(str)
     note = dOptional(str, nullable=True)
     delete = dOptional(str, nullable=True)
-    game_version = Required("GameVersion")
-
-
-class GameVersion(db.Entity):
-    id = PrimaryKey(int, auto=True)
-    version = Required(str)
-    downloads = dSet(GameDownload)
+    game_version = Required(str)
     game = Required(Game)
 
 
@@ -180,6 +171,10 @@ elif config.DB_TYPE == "mysql":
 
 
 db.generate_mapping(create_tables=True)
+db.disconnect()
+
+queries = pugsql.module("queries/")
+queries.connect(f"sqlite:///{config.DB_FILE}")
 
 
 class PReview(BaseModel):
@@ -260,107 +255,7 @@ class PGameSearchResult(BaseModel):
     play_online: Optional[str]
 
 
-def pgame_to_db_game(cur, game):
-    # authors_to_add = [(v, k) for k, v in game.authors.items() if not GameAuthor.get(name=k, id=v)]
-    # execute_values(cur, f"insert into gameauthor (id, name) values %s", authors_to_add)
-
-    for k, v in game.authors.items():
-        author = GameAuthor.get(name=k, id=v)
-        if not author:
-            GameAuthor(id=v, name=k)
-
-    db_game = Game(
-        id=game.id,
-        title=game.title,
-        authors=[GameAuthor.get(id=v) for v in game.authors.values()],
-        version=game.version or "1.0.0",
-        engine=GameEngine.get(name=game.game_engine),
-        content_rating=ContentRating.get(name=game.content_rating),
-        language=game.language,
-        release_date=game.release_date,
-        last_update=game.last_update,
-        development_stage=game.development_stage,
-        likes=game.likes,
-        contest=game.contest or "",
-        orig_pc_gender=game.orig_pc_gender,
-        adult_themes=[AdultTheme.get(id=v) for v in game.themes["adult"].values()]
-        if game.themes
-        else [],
-        transformation_themes=[
-            TransformationTheme.get(id=v)
-            for v in game.themes["transformation"].values()
-        ]
-        if game.themes
-        else [],
-        multimedia_themes=[
-            MultimediaTheme.get(id=v) for v in game.themes["multimedia"].values()
-        ]
-        if game.themes
-        else [],
-        thread=game.thread or "",
-        play_online=game.play_online or "",
-        synopsis_text=game.synopsis["text"] if game.synopsis else "",
-        synopsis_html=game.synopsis["html"] if game.synopsis else "",
-        plot_text=game.plot["text"] if game.plot else "",
-        plot_html=game.plot["html"] if game.plot else "",
-        characters_text=game.characters["text"] if game.characters else "",
-        characters_html=game.characters["html"] if game.characters else "",
-        walkthrough_text=game.walkthrough["text"] if game.walkthrough else "",
-        walkthrough_html=game.walkthrough["html"] if game.walkthrough else "",
-        changelog_text=game.changelog["text"] if game.changelog else "",
-        changelog_html=game.changelog["html"] if game.changelog else "",
-    )
-
-    # commit()
-
-    db_versions = []
-    for version, downloads in game.versions.items():
-        db_downloads = []
-
-        version = GameVersion(version=version, game=db_game)
-        for download in downloads:
-            db_downloads.append(
-                GameDownload(
-                    delete=download["delete"] or "",
-                    link=download["link"],
-                    note=download["note"] or "",
-                    report=download["report"],
-                    game_version=version,
-                )
-            )
-
-        # downloads_to_add = [(d["link"], d["report"], d["note"], d["delete"], version.to_dict()["id"]) for d in downloads]
-        # execute_values(cur, f"insert into gamedownload (link, report, note, delete, game_version) values %s", downloads_to_add)
-
-        # db_downloads = list((d for d in GameDownload.select() if d.game_version == version))
-
-        # print(db_downloads)
-
-        version.downloads = db_downloads
-        db_versions.append(version)
-
-    db_game.versions = db_versions
-
-    reviews = []
-    for review in game.reviews:
-        reviews.append(
-            Review(
-                author=review.author,
-                text=review.text,
-                date=review.date,
-                version=review.version,
-                game=db_game,
-            )
-        )
-    # reviews_to_add = [(r.author, r.text, r.date, r.version, db_game.id) for r in game.reviews]
-    # execute_values(cur, f"insert into review (author, text, date, version, game) values %s", reviews_to_add)
-
-    db_game.reviews = reviews
-
-    return db_game
-
-
-def parse_game_page(game_id, html_game, html_reviews):
+def parse_game_page(game_id, html_game, html_reviews, author_id_mapping):
     item = BeautifulSoup(html_game, features="lxml")
     reviews_soup = BeautifulSoup(html_reviews, features="lxml")
 
@@ -386,13 +281,10 @@ def parse_game_page(game_id, html_game, html_reviews):
             except:
                 continue
     else:
-        try:
-            author = (
-                container.text.strip().lstrip("by").strip().lower().replace(" ", "_")
-            )
-            data["authors"][author] = GameAuthor.get(name=author).id
-        except:
+        author = container.text.strip().lstrip("by").strip().lower().replace(" ", "_")
+        if author not in author_id_mapping:
             return
+        data["authors"][author] = author_id_mapping[author]
 
     game_info = item.select(".viewgamesidecontainer > .viewgameanothercontainer")[0]
 
@@ -440,16 +332,19 @@ def parse_game_page(game_id, html_game, html_reviews):
         elif left == "Orig PC Gender":
             data["orig_pc_gender"] = right.text
         elif left == "Adult Themes":
+            data["themes"]["adult"] = {}
             for link in right.find_all("a"):
                 data["themes"]["adult"][link.text] = int(
                     link.get("href").split("adult=")[1]
                 )
         elif left == "TF Themes":
+            data["themes"]["transformation"] = {}
             for link in right.find_all("a"):
                 data["themes"]["transformation"][link.text] = int(
                     link.get("href").split("transformation=")[1]
                 )
         elif left == "Multimedia":
+            data["themes"]["multimedia"] = {}
             for link in right.find_all("a"):
                 data["themes"]["multimedia"][link.text] = int(
                     link.get("href").split("multimedia=")[1]
@@ -482,8 +377,8 @@ def parse_game_page(game_id, html_game, html_reviews):
             continue
         title = item.find("a", {"href": f"#tabs-{i}"}).text
         data[title.lower()] = {}
-        data[title.lower()]["text"] = tab.text
-        data[title.lower()]["html"] = str(tab)
+        data[title.lower()]["text"] = tab.text.strip()
+        data[title.lower()]["html"] = str(tab).strip()
 
     play_online = item.find(id="play")
     if play_online:
@@ -540,27 +435,24 @@ def fetch_page_raw(game_id, _type, url):
     return game_id, _type, r.text
 
 
-@db_session
 def crawl():
-    con = db.get_connection()
-    cur = con.cursor()
-
     console.log("Fetching Categories")
     cat_data = [
-        ("engine", "gameengine", GameEngine),
-        ("rating", "contentrating", ContentRating),
-        ("adult", "adulttheme", AdultTheme),
-        ("transformation", "transformationtheme", TransformationTheme),
-        ("multimedia", "multimediatheme", MultimediaTheme),
-        ("author", "gameauthor", GameAuthor),
+        ("engine", "engine"),
+        ("rating", "contentrating"),
+        ("adult", "adulttheme"),
+        ("transformation", "transformationtheme"),
+        ("multimedia", "multimediatheme"),
+        ("author", "author"),
     ]
 
-    for name, table_name, db_cls in tqdm(cat_data, unit="categories"):
+    for name, fn_name in tqdm(cat_data, unit="categories"):
         r = requests.get(f"https://tfgames.site/?module=browse&by={name}")
         data = parse_category(r.text, name)
-        for _id, _repr in data:
-            db_cls(id=_id, name=_repr)
-        # execute_values(cur, f"insert into {table_name} (id, name) values %s", data)
+        getattr(
+            queries,
+            f"insert_{fn_name}",
+        )(*[{"id": _id, "name": _repr} for _id, _repr in data])
 
     with console.status("Fetching list of games..."):
         payload = "module=search&search=1&likesmin=0&likesmax=0&development%5B%5D=11&development%5B%5D=12&development%5B%5D=18&development%5B%5D=41&development%5B%5D=46&development%5B%5D=47"
@@ -614,14 +506,107 @@ def crawl():
 
     console.log("Parsing info")
     games = []
+    author_id_mapping = {row["name"]: row["id"] for row in queries.list_author()}
     for game_id, data in tqdm(result.items(), unit="games"):
-        game = parse_game_page(game_id, data["game"], data["reviews"])
+        game = parse_game_page(
+            game_id, data["game"], data["reviews"], author_id_mapping
+        )
         if game:
             games.append(game)
 
-    console.log("Writing to database")
-    for game in tqdm(games, unit="games"):
-        pgame_to_db_game(cur, game)
+    game_data = []
+    game_author_data = []
+    game_review_data = []
+    game_download_data = []
+    theme_data = {
+        "adult": [],
+        "multimedia": [],
+        "transformation": [],
+    }
+    engine_id_mapping = {row["name"]: row["id"] for row in queries.list_engine()}
+    rating_id_mapping = {row["name"]: row["id"] for row in queries.list_contentrating()}
+    for game in games:
+        game_author_data.extend(
+            [
+                {"author": author_id, "game": game.id}
+                for author_id in game.authors.values()
+            ]
+        )
+
+        game_review_data.extend(
+            [
+                {
+                    "author": review.author,
+                    "text": review.text,
+                    "date": review.date,
+                    "version": review.version,
+                    "game": game.id,
+                }
+                for review in game.reviews
+            ]
+        )
+
+        for version, downloads in game.versions.items():
+            game_download_data.extend(
+                [
+                    {
+                        "link": download["link"],
+                        "note": download["note"],
+                        "report": download["report"],
+                        "game_version": version,
+                        "game": game.id,
+                    }
+                    for download in downloads
+                ]
+            )
+
+        for name in ("adult", "multimedia", "transformation"):
+            theme_data[name].extend(
+                [
+                    {f"{name}theme": theme_id, "game": game.id}
+                    for theme_id in game.themes[name].values()
+                ]
+            )
+
+        data = dict(
+            id=game.id,
+            title=game.title,
+            version=game.version or "1.0.0",
+            engine=engine_id_mapping[game.game_engine],
+            content_rating=rating_id_mapping[game.content_rating],
+            language=game.language,
+            release_date=game.release_date,
+            last_update=game.last_update,
+            development_stage=game.development_stage,
+            likes=game.likes,
+            contest=game.contest or "",
+            orig_pc_gender=game.orig_pc_gender,
+            thread=game.thread or "",
+            play_online=game.play_online or "",
+            synopsis_text=game.synopsis["text"] if game.synopsis else "",
+            synopsis_html=game.synopsis["html"] if game.synopsis else "",
+            plot_text=game.plot["text"] if game.plot else "",
+            plot_html=game.plot["html"] if game.plot else "",
+            characters_text=game.characters["text"] if game.characters else "",
+            characters_html=game.characters["html"] if game.characters else "",
+            walkthrough_text=game.walkthrough["text"] if game.walkthrough else "",
+            walkthrough_html=game.walkthrough["html"] if game.walkthrough else "",
+            changelog_text=game.changelog["text"] if game.changelog else "",
+            changelog_html=game.changelog["html"] if game.changelog else "",
+        )
+        game_data.append(data)
+
+    with console.status("Writing to database..."):
+        queries.insert_game(*game_data)
+        queries.insert_review(*game_review_data)
+        queries.insert_download(*game_download_data)
+        queries.insert_author_game(*game_author_data)
+        if theme_data["adult"]:
+            queries.insert_adulttheme_game(*theme_data["adult"])
+        if theme_data["multimedia"]:
+            queries.insert_multimediatheme_game(*theme_data["multimedia"])
+        if theme_data["transformation"]:
+            queries.insert_transformationtheme_game(*theme_data["transformation"])
 
     console.log("Done")
 
